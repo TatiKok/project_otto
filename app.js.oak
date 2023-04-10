@@ -1,0 +1,802 @@
+{
+	println: println
+	default: default
+	is: is
+	map: map
+	find: find
+	last: last
+	slice: slice
+	filter: filter
+	append: append
+	reverse: reverse
+	debounce: debounce
+} := import('std')
+{
+	lower: lower
+	trim: trim
+	contains?: strContains?
+} := import('str')
+fmt := import('fmt')
+sort := import('sort')
+random := import('random')
+datetime := import('datetime')
+json := {
+	parse: __native_json_parse
+	serialize: __native_json_serialize
+}
+uid := import('../lib/uid')
+{
+	Renderer: Renderer
+	h: h
+} := import('../lib/torus.js')
+{
+	dayList: dayList
+	today: today
+	tomorrow: tomorrow
+	yesterday: yesterday
+	addDays: addDays
+} := import('dateutils.js')
+defaults := import('defaults.js')
+
+SyncInterval := 3
+LocalStorageKey := 'albatross:0'
+ColorSchemeKey := 'albatross:theme'
+Colors := [
+	'#11b6a5'
+	'#4e70c1'
+	'#715d8c'
+	'#8b5cb2'
+	'#8c5d5d'
+	'#90b847'
+	'#969696'
+	'#b25c5c'
+	'#cfab4a'
+]
+UseLocalStorage? := Preload = ?
+ClientRenderer := if {
+	navigator.userAgent |> strContains?('Firefox') -> :gecko
+	navigator.userAgent |> strContains?('Chrome') -> :blink
+	navigator.userAgent |> strContains?('Safari') -> :webkit
+	_ -> :unknownRenderer
+}
+
+if Preload = ? -> {
+	Preload <- if persisted := window.localStorage.getItem(LocalStorageKey) {
+		? -> defaults.DefaultData
+		_ -> json.parse(persisted)
+	}
+}
+
+State := {
+	// constants
+	Today: today()
+	WeekDays: dayList(7)
+	MonthDays: dayList(30)
+
+	// state
+	theme: window.localStorage.getItem(ColorSchemeKey) |> default('light')
+	syncing?: false
+	editingCategories?: false
+	task: ?
+	range: 'week'
+	search: ''
+	showDone: false
+	categories: Preload.categories
+	tasks: Preload.tasks
+	results: []
+}
+
+enqueueSync := with debounce(SyncInterval) fn syncImmediately {
+	State.syncing? := true
+	render()
+
+	if UseLocalStorage? {
+		true -> {
+			window.localStorage.setItem(LocalStorageKey, json.serialize({
+				categories: State.categories
+				tasks: State.tasks
+			}))
+			State.syncing? := false
+			render()
+		}
+		_ -> {
+			resp := fetch('/tasks', {
+				method: 'PUT'
+				headers: {
+					'Content-Type': 'application/json'
+				}
+				body: json.serialize({
+					categories: State.categories
+					tasks: State.tasks
+				})
+			})
+			resp |> call(:catch, fn(err) {
+				State.syncing? := String(err)
+				render()
+			})
+			resp.then(fn {
+				State.syncing? := false
+				render()
+			})
+		}
+	}
+}
+
+fn sync {
+	State.syncing? := true
+	enqueueSync()
+}
+
+fn dayName(day) {
+	d := datetime.parse(day + 'T00:00:00') |>
+		datetime.timestamp() |>
+		datetime.describe()
+	jsd := new(Date)
+	jsd.setFullYear(d.year)
+	jsd.setMonth(d.month - 1)
+	jsd.setDate(d.day)
+
+	if jsd.getDay() {
+		0 -> 'Sun'
+		1 -> 'Mon'
+		2 -> 'Tue'
+		3 -> 'Wed'
+		4 -> 'Thu'
+		5 -> 'Fri'
+		6 -> 'Sat'
+	}
+}
+
+fn fmtDay(day) {
+	d := datetime.parse(day + 'T00:00:00') |>
+		datetime.timestamp() |>
+		datetime.describe()
+
+	monthName := if d.month {
+		1 -> 'Jan'
+		2 -> 'Feb'
+		3 -> 'Mar'
+		4 -> 'Apr'
+		5 -> 'May'
+		6 -> 'Jun'
+		7 -> 'Jul'
+		8 -> 'Aug'
+		9 -> 'Sep'
+		10 -> 'Oct'
+		11 -> 'Nov'
+		12 -> 'Dec'
+	}
+
+	if day {
+		today() -> 'Today'
+		tomorrow() -> 'Tomorrow'
+		yesterday() -> 'Yesterday'
+		_ -> '{{0}}, {{1}} {{2}}' |> fmt.format(dayName(day), monthName, d.day)
+	}
+}
+
+fn editCategories() {
+	State.editingCategories? := true
+	render()
+
+	document.querySelector('dialog.category-editor').showModal() // show backdrop
+}
+
+fn focusSearchField {
+	if el := document.querySelector('.task-list-search-input') {
+		? -> {}
+		_ -> el.focus()
+	}
+}
+
+fn focusFieldWithDataID(id) {
+	if el := document.querySelector('[data-id="' + id + '"]') {
+		? -> {}
+		_ -> el.focus()
+	}
+}
+
+fn addTaskAndFocus() {
+	id := uid.new()
+	State.tasks << {
+		id: id
+		text: ''
+		body: ''
+		due: today()
+		done: ?
+		cat: ?
+	}
+	State.task := id
+	sync()
+	updateSearchResults()
+
+	focusFieldWithDataID(id)
+}
+
+fn updateSearchResults() {
+	tasks := State.tasks
+	if !State.showDone -> tasks <- tasks |> filter(fn(t) t.done = ?)
+
+	State.results := tasks |> libsearch.search(
+		String(State.search)
+		fn(t) String(t.text + ' ' + t.body)
+		{
+			mode: String('autocomplete')
+		}
+	)
+	render()
+}
+
+r := Renderer('#root')
+
+fn FlexSpacer h(:div, ['flex-spacer'], [])
+
+fn Editable(attrs, allowTab?, handleInput, handleEnter) {
+	handleEnter := handleEnter |> default(fn {})
+
+	h(:div, ['textarea-group'], [
+		h(:div, [
+			'textarea-shadow'
+			if attrs.value |> last() {
+				'\n' -> 'extra-height'
+				_ -> ''
+			}
+		], [attrs.value])
+		h(:textarea, ['textarea-itself'], attrs, {
+			input: handleInput
+			keydown: fn(evt) if evt.key {
+				'Enter' -> handleEnter(evt)
+				'Tab' -> if allowTab? -> {
+					evt.preventDefault()
+
+					if ? != idx := evt.target.selectionStart -> {
+						val := evt.target.value
+						front := val |> slice(0, idx)
+						back := val |> slice(idx)
+						evt.target.value := front + '\t' + back
+						evt.target.setSelectionRange(idx + 1, idx + 1)
+
+						handleInput(evt)
+					}
+				}
+			}
+		}, [])
+	])
+}
+
+fn Category(id) {
+	cat := State.categories.(
+		State.categories |> find(fn(c) c.id = id)
+	)
+
+	if cat {
+		? -> h(:div, ['category'], ['Unknown category'])
+		_ -> h(:div, ['category'], {
+			style: {
+				background: cat.color
+			}
+		}, [
+			if cat.name {
+				'' -> 'Unnamed category'
+				_ -> cat.name
+			}
+		])
+	}
+}
+
+fn Task(task) {
+	h(:li, ['task-li'], [
+		h(:div, [
+			'task'
+			if task.done {
+				? -> 'task-undone'
+				_ -> 'task-done'
+			}
+			if State.task {
+				task.id -> 'active'
+				_ -> ''
+			}
+		], {
+			'data-task-id': task.id
+		}, [
+			h(:label, ['task-status'], [
+				h(:input, ['task-checkbox'], {
+					type: 'checkbox'
+					checked: task.done != ?
+				}, {
+					change: fn(evt) {
+						task.done := if task.done {
+							? -> today()
+							_ -> ?
+						}
+						sync()
+						render()
+
+						// give user a second to visually confirm checked
+						// before removing it from view
+						with wait(1) fn {
+							updateSearchResults()
+						}
+					}
+				}, [])
+			])
+			h(:div, ['task-content'], {
+				tabIndex: 0
+			}, {
+				click: fn {
+					State.task := if State.task {
+						task.id -> ?
+						_ -> task.id
+					}
+					render()
+				}
+				keydown: fn(evt) if evt.key = 'Enter' -> {
+					State.task := if State.task {
+						task.id -> ?
+						_ -> task.id
+					}
+					render()
+				}
+			}, [
+				h(:div, ['task-text'], [
+					if task.text |> trim() {
+						'' -> 'Unnamed task'
+						_ -> task.text
+					}
+				])
+				h(:div, ['task-body-preview'], [
+					if {
+						State.search |> trim() != ''
+						State.range = 'all' -> if task.due != ? -> {
+							h(:span, [], [
+								h(:span, ['task-due'], [fmtDay(task.due)])
+								if task.body |> trim() != '' -> ' · '
+							])
+						}
+					}
+					task.body
+				])
+				if task.cat != ? -> h(:div, ['task-category'], [
+					Category(task.cat)
+				])
+			])
+		])
+	])
+}
+
+fn Tasks(tasks) {
+	h(:ul, ['tasks', 'flex-col'], {
+		tasks |> with map() fn(task) {
+			Task(task)
+		}
+	})
+}
+
+fn Day(day) {
+	if dayTasks := State.results |> filter(fn(task) task.due = day) {
+		[] -> ?
+		_ -> h(:div, ['day', 'day-' + dayName(day) |> lower()], [
+			h(:div, ['day-header', 'flex-row'], [
+				fmtDay(day)
+				FlexSpacer()
+				string(len(dayTasks))
+			])
+			Tasks(dayTasks)
+		])
+	}
+}
+
+fn TaskList() {
+	h(:div, ['task-list'], [
+		h(:div, ['task-list-search', 'flex-col'], [
+			h(:div, ['task-list-search-row', 'flex-row'], [
+				h(:input, ['task-list-search-input'], {
+					placeholder: 'Search {{0}} tasks...' |> fmt.format(State.tasks |> len())
+					value: State.search
+				}, {
+					input: fn(evt) {
+						State.search := evt.target.value
+						updateSearchResults()
+					}
+					keydown: fn(evt) if evt.key = 'Escape' -> {
+						if evt.target.value {
+							'' -> evt.target.blur()
+							_ -> {
+								State.search := ''
+								updateSearchResults()
+							}
+						}
+					}
+				}, [])
+				h(:button, ['task-list-new-task'], { title: 'New task' }, {
+					click: fn() addTaskAndFocus()
+				}, ['+'])
+			])
+			h(:div, ['task-list-search-row', 'flex-row'], [
+				h(:button, ['task-list-show-done'], { title: 'Show tasks marked as done' }, {
+					click: fn {
+						State.showDone := !State.showDone
+						sync()
+						updateSearchResults()
+					}
+				}, [
+					if State.showDone {
+						true -> 'Hide done'
+						_ -> 'Show done'
+					}
+				])
+				h(:select, ['task-list-range-select'], {
+					value: State.range
+				}, {
+					change: fn(evt) {
+						State.range := evt.target.value
+						render()
+					}
+				}, {
+					[
+						['today', 'Today']
+						['week', 'This week']
+						['month', 'Next 30 days']
+						['all', 'All tasks']
+					] |> with map() fn(option) {
+						[value, text] := option
+						h(:option, [], { value: value }, {
+							selected: State.range = value
+						}, [text])
+
+					}
+				})
+			])
+		])
+		h(:div, ['task-list-list'], {
+			if State.search |> trim() {
+				'' -> {
+					past := if overdues := State.results |> filter(fn(t) t.due < State.Today) {
+						[] -> []
+						_ -> [
+							h(:div, ['day', 'day-overdue'], [
+								h(:div, ['day-header', 'flex-row'], [
+									'Overdue'
+									FlexSpacer()
+									len(overdues)
+								])
+								Tasks(overdues)
+							])
+						]
+					}
+					if State.range {
+						'today' -> past |> append([State.Today] |> map(Day))
+						'week' -> past |> append(State.WeekDays |> map(Day))
+						'month' -> past |> append(State.MonthDays |> map(Day))
+						'all' -> State.results |> sort.sort(:due) |> reverse() |> map(Task)
+					}
+				}
+				_ -> State.results |> map(Task)
+			}
+		})
+	])
+}
+
+fn TaskPageHeader(task) {
+	fn swapTasks(t1, t2) {
+		State.tasks := State.tasks |> map(fn(t) if t.id {
+			t1.id -> t2
+			t2.id -> t1
+			_ -> t
+		})
+		sync()
+		updateSearchResults()
+	}
+
+	h(:div, ['task-page-header', 'flex-row'], [
+		h(:button, ['task-page-header-close'], { title: 'Close' }, {
+			click: fn {
+				State.task := ?
+				render()
+			}
+		}, ['Close'])
+		h(:button, ['task-page-header-up'], { title: 'Move up in list' }, {
+			click: fn {
+				taskIDs := Array.from(document.querySelectorAll('[data-task-id]')) |>
+					map(fn(e) e.getAttribute('data-task-id'))
+				if ? != prevTaskID := taskIDs.(taskIDs |> find(is(task.id)) - 1) -> {
+					swapTasks(
+						State.tasks.(State.tasks |> find(fn(t) t.id = prevTaskID))
+						task
+					)
+				}
+			}
+		}, ['↖'])
+		h(:button, ['task-page-header-down'], { title: 'Move down in list' }, {
+			click: fn {
+				taskIDs := Array.from(document.querySelectorAll('[data-task-id]')) |>
+					map(fn(e) e.getAttribute('data-task-id'))
+				if ? != nextTaskID := taskIDs.(taskIDs |> find(is(task.id)) + 1) -> {
+					swapTasks(
+						State.tasks.(State.tasks |> find(fn(t) t.id = nextTaskID))
+						task
+					)
+				}
+			}
+		}, ['↘'])
+		FlexSpacer()
+		h(:button, ['task-page-header-delete'], { title: 'Delete task' }, {
+			click: fn() if confirm('Delete this task?') -> {
+				State.task := ?
+				State.tasks := State.tasks |> filter(fn(t) t.id != task.id)
+				sync()
+				updateSearchResults()
+			}
+		}, ['Delete'])
+		h(:button, ['task-page-header-prev'], { title: 'Pull forward 1 day' }, {
+			click: fn {
+				task.due := addDays(task.due, -1)
+				sync()
+				updateSearchResults()
+			}
+		}, ['←'])
+		h(:button, ['task-page-header-today'], { title: 'Make due day' }, {
+			click: fn {
+				task.due := today()
+				sync()
+				updateSearchResults()
+			}
+		}, ['↓'])
+		h(:button, ['task-page-header-next'], { title: 'Postpone 1 day' }, {
+			click: fn {
+				task.due := addDays(task.due, 1)
+				sync()
+				updateSearchResults()
+			}
+		}, ['→'])
+	])
+}
+
+fn TaskPage(task) {
+	h(:div, ['task-page'], {
+		if task {
+			? -> [h(:div, ['task-page-empty'], [])]
+			_ -> [
+				TaskPageHeader(task)
+				h(:div, ['task-editor', 'flex-col'], [
+					h(:div, ['task-editor-text'], [
+						Editable({
+							value: task.text
+							placeholder: 'Do this'
+							'data-id': task.id
+						}, false, fn(evt) {
+							task.text := evt.target.value
+							sync()
+							render()
+						}, fn(evt) {
+							evt.preventDefault()
+							focusFieldWithDataID(string(task.id) + '-body')
+						})
+					])
+					h(:div, ['task-editor-option-row'], [
+						h(:div, ['task-editor-option-subrow'], [
+							h(:input, ['task-editor-due-input'], {
+								type: 'date'
+								value: task.due
+							}, {
+								change: fn(evt) {
+									task.due := evt.target.value
+									sync()
+									render()
+								}
+							}, [])
+							h(:button, ['task-editor-due-reset'], { title: 'Unset due date' }, {
+								click: fn {
+									task.due := ?
+									sync()
+									render()
+								}
+							}, ['Unset'])
+						])
+						h(:div, ['task-editor-option-subrow'], [
+							h(:select, ['task-editor-category-select'], {}, {
+								change: fn(evt) {
+									task.cat := if value := evt.target.value {
+										'' -> ?
+										_ -> value
+									}
+									sync()
+									render()
+								}
+							}, [
+								h(:option, [], {
+									value: ''
+									selected: task.cat = ?
+								}, ['No category'])
+								h(:optgroup, [], { label: 'Categories' }, {
+									State.categories |> with map() fn(cat) {
+										h(:option, [], {
+											value: cat.id
+											selected: task.cat = cat.id
+										}, [
+											if cat.name {
+												'' -> 'Unnamed category'
+												_ -> cat.name
+											}
+										])
+									}
+								})
+							])
+							h(:button, ['task-editor-category-edit'], {}, {
+								click: fn() editCategories()
+							}, ['Edit'])
+						])
+					])
+					h(:div, ['task-editor-body'], [
+						Editable({
+							value: task.body
+							placeholder: 'Some more context'
+							'data-id': string(task.id) + '-body'
+						}, true, fn(evt) {
+							task.body := evt.target.value
+							sync()
+							render()
+						})
+					])
+				])
+			]
+		}
+	})
+}
+
+fn CategoryEditor() {
+	h(:dialog, ['category-editor', 'flex-col'], [
+		h(:div, ['category-editor-header', 'flex-row'], [
+			h(:h2, ['Categories'])
+			FlexSpacer()
+			h(:button, ['dialog-close'], { title: 'Save and close' }, {
+				click: fn {
+					State.editingCategories? := false
+					render()
+				}
+			}, ['Done'])
+		])
+		h(:ul, ['category-editor-list', 'flex-col'], {
+			State.categories |> with map() fn(cat) {
+				h(:li, ['category-editor-item', 'flex-row'], [
+					h(:input, ['category-editor-color-input'], {
+						type: 'color'
+						value: cat.color
+					}, {
+						input: fn(evt) {
+							cat.color := evt.target.value
+							sync()
+							render()
+						}
+					}, [])
+					h(:input, ['category-editor-name-input'], {
+						value: cat.name
+						placeholder: 'New category'
+						'data-id': cat.id
+					}, {
+						input: fn(evt) {
+							cat.name := evt.target.value
+							sync()
+							render()
+						}
+					}, [])
+					if State.tasks |> filter(fn(t) t.cat = cat.id) = [] -> h(:button, ['category-editor-delete'], { title: 'Delete category' }, {
+						click: fn {
+							State.categories := State.categories |> filter(fn(c) c.id != cat.id)
+							sync()
+							render()
+						}
+					}, ['X'])
+				])
+			}
+		})
+		h(:button, ['category-editor-add'], { title: 'Add category' }, {
+			click: fn {
+				id := uid.new()
+				State.categories << {
+					id: id
+					name: ''
+					color: random.choice(Colors)
+				}
+				sync()
+				render()
+
+				focusFieldWithDataID(id)
+			}
+		}, ['+ New Category'])
+	])
+}
+
+fn render {
+	document.body.classList.toggle('dark', State.theme = 'dark')
+
+	with r.update() h(:div, [
+		'app'
+		if State.task {
+			? -> 'no-active-task'
+			_ -> 'active-task'
+		}
+	], [
+		h(:header, ['flex-row'], [
+			h(:a, ['logo'], { href: '/' }, ['Albatross'])
+			FlexSpacer()
+			if errMsg := State.syncing? {
+				true, false -> ? // don't report normal states
+				_ -> h(:button, ['sync-try-again'], {
+					title: 'Sync error: {{0}}\nClick to try again.' |> fmt.format(errMsg)
+				}, {
+					click: fn() syncImmediately()
+				}, ['⚠️'])
+			}
+			h(:button, ['theme-button'], {
+				title: if State.theme {
+					'light' -> 'Dark mode'
+					_ -> 'Light mode'
+				}
+			}, {
+				click: fn {
+					State.theme := if State.theme {
+						'light' -> 'dark'
+						_ -> 'light'
+					}
+					window.localStorage.setItem(ColorSchemeKey, State.theme)
+					render()
+				}
+			}, [
+				if State.theme {
+					'light' -> '🌘'
+					_ -> '☀️'
+				}
+			])
+		])
+		h(:main, ['flex-row'], [
+			TaskList()
+			TaskPage(
+				State.tasks.(
+					State.tasks |> find(fn(t) t.id = State.task)
+				)
+			)
+		])
+		h(:footer, [
+			h(:a, [], { href: 'https://github.com/thesephist/albatross', target: '_blank' }, ['Albatross'])
+			', a way to organize life, by '
+			h(:a, [], { href: 'https://thesephist.com', target: '_blank' }, ['L'])
+			' for '
+			h(:a, [], { href: 'https://karinanguyen.com', target: '_blank' }, ['K'])
+			'.'
+		])
+		if State.editingCategories? -> CategoryEditor()
+	])
+}
+
+with document.body.addEventListener('keydown') fn(evt) if [evt.ctrlKey | evt.metaKey, evt.shiftKey, evt.key] {
+	[true, false, '/'] -> focusSearchField()
+	[true, false, 'k'] -> if State.task != ? -> focusFieldWithDataID(State.task)
+	[true, true, 'k'] -> addTaskAndFocus()
+}
+
+// prevent close if persisting
+with window.addEventListener('beforeunload') fn(evt) if State.syncing? {
+	false -> evt.returnValue := _
+	_ -> {
+		evt.preventDefault()
+		evt.returnValue := 0 // cannot be null or undefined
+	}
+}
+
+fn enqueueMinutelyUpdate {
+	render()
+	with wait(30) fn {
+		enqueueMinutelyUpdate()
+	}
+}
+enqueueMinutelyUpdate()
+
+// for browser renderer- or engine-dependent hacks, mark the body
+document.body.classList.add(string(ClientRenderer))
+
+// default blank search on first load
+updateSearchResults()
+
+render()
+

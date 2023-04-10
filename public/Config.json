@@ -1,0 +1,60 @@
+{
+    "VERSION": 0, 
+    "BETA": true,
+    "TITLE": "AlmexECM",
+    "COPYRIGHT": "AlmexECM",
+    "HELP_URL": "https://almexecm.com.ua/",
+    "LANG": "ru",
+    "INDEX_DATE": [
+      1,
+      3
+    ],
+    "START_YEAR": 2018,
+    "THRIFT": {
+      "URL": "https://dev1.almexecm.com:8443",
+      "CORE": "kaz-server-dev1",
+      "CHAT": "chat-server-dev1",
+      "AVATAR": "avatar-server-dev1"
+    },
+    "ONLY_OFFICE_CALLBACK_URL": "https://dev1.almexecm.com:8443/kaz-server-dev1/onlyOfficeCallBack",
+    "UNIQUE_PDF_ID": true,
+    "ENABLE_PDF_DOWNLOAD": true,
+    "ATTACHMENT_EDIT_MODE": true,
+    "DOC_MAP_RELATIONS": true,
+    "COPY_CONTENT_ITEMS_VALUE_TO_CHILD": true,
+    "USE_BPM_ROLES": true,
+    "SHOW_REASSIGN_TYPE": false,
+    "SIGN_UA_PROVIDER": "IIT",
+    "IIT": {
+      "encoding": "utf-8",
+      "httpProxyServiceURL": "https://dev1.almexecm.com:8443/kaz-server-dev1/ProxyHandler",
+      "directAccess": true,
+      "CAs": "/Data/CAs.Test.json",
+      "CACertificates": "/Data/CACertificates.Test.p7b",
+      "allowedKeyMediaTypes": [
+        "е.ключ BIFIT iToken",
+        "криптомод. ІІТ Гряда-61",
+        "е.ключ ІІТ Алмаз-1К"
+      ]
+    },
+    "DEVICE_NAME_IIT": [
+      "криптомод. ІІТ Гряда-301"
+    ],
+    "UMCA_SERVICE": {
+      "HTTPS": true,
+      "PORT": 25989
+    },
+    "SIGN_TYPE": [
+      "FILE",
+      "SERVER",
+      "SELECT_UMCA",
+      "TOKEN"
+    ],
+    "USER_EMAIL_REQUIRED": true,
+    "MOBILE_STORE": {
+      "APPLE": "itms-services://?action=download-manifest&url=https://dl.dropboxusercontent.com/s/tclu27ndkh0zwor/manifest.plist",
+      "ANDROID": "https://play.google.com/store/apps/details?id=com.kaz.documents.prod"
+    },
+    "STAGE_LEAD_TIME": "1d",
+    "SET_DOCUMENT_VIEWED": 7000
+  }
